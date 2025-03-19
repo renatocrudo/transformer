@@ -177,3 +177,5 @@ dados/
 .DS_Store
 *.faiss
 *.json
+*.bin
+*.csv
