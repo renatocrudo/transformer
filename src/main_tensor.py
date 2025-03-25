@@ -5,6 +5,7 @@ import numpy as np
 import faiss
 from datetime import datetime
 import argparse
+from sentence_transformers import SentenceTransformer
 # função para pre-processar os dados
 def preprocess_row(row):
     #verifico se a data de transação é datetime, senão converto para datetime
@@ -53,21 +54,32 @@ def build_index(path_xlsx="dados/ITBI_2025.xlsx", index_path="faiss_index.bin", 
     if not pd.api.types.is_datetime64_any_dtype(df['Data de Transação']):
         df['Data de Transação'] = pd.to_datetime(df['Data de Transação'], errors='coerce')
 
+    # Filter only "Compra e venda" transactions
+    df = df[df['Natureza de Transação'] == '1.Compra e venda']
+    print(f"Filtrando apenas transações de compra e venda. Total de documentos: {len(df)}")
+
     # preprocessando os dados
     documents = df.apply(preprocess_row, axis=1).tolist()
     print(f"Preprocessando {len(documents)} documentos...")
 
     #Carrega o modelo de embeddings
-    model_url = "https://tfhub.dev/google/universal-sentence-encoder/4"
-    embed = hub.load(model_url)
+    #model_url = "https://tfhub.dev/google/universal-sentence-encoder/4"
+    #embed = hub.load(model_url)
+    print("Carregando o modelo Sentence Transformers...")
+    model = SentenceTransformer('all-MiniLM-L6-v2')
     print("Modelo de embeddings carregado com sucesso!")
+    
     #gerando os embeddings dos documentos
-    embeddings = embed(documents).numpy()
+    #embeddings = embed(documents).numpy()
+    embeddings = model.encode(documents, convert_to_numpy=True)
+    norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
+    embeddings = embeddings / norms
     print("Embeddings gerados com sucesso com shape:", embeddings.shape)
 
     #criando o índice FAISS
-    dim = embeddings.shape[1] # dimensão dos embeddings
-    index = faiss.IndexFlatL2(dim) # criando o índice com a métrica de distância euclidiana
+    dim = embeddings.shape[768] # dimensão dos embeddings
+    #index = faiss.IndexFlatL2(dim) # criando o índice com a métrica de distância euclidiana
+    index = faiss.IndexFlatIP(dim) # criando o índice com a métrica de produto interno
     index.add(embeddings) # adicionando os embeddings ao índice
     print(f"Índice FAISS criado com {index.ntotal} documentos")
 
@@ -79,19 +91,29 @@ def build_index(path_xlsx="dados/ITBI_2025.xlsx", index_path="faiss_index.bin", 
 
 
 # Função que recupera os dados do FAISS
-def retrieve_documents(query, index, df, embed, top_k=5):
+def retrieve_documents(query, index, df, model, top_k=5):
     # Gera o embedding da query com o mesmo modelo
-    query_embedding = embed([query]).numpy()
+    #query_embedding = embed([query]).numpy()
+    query_embedding = model.encode(query, convert_to_numpy=True)
+    query_embedding = query_embedding.reshape(1, -1)
+    query_embedding = query_embedding / np.linalg.norm(query_embedding, axis=1, keepdims=True)
+    
     # utilizando p Faiss para encontrar os top_k resultados mais relevantes
+    top_k = 5 #index.ntotal
     distances, indices = index.search(query_embedding, top_k)
+
+
 
     #armazendo os resultados recuperados
     retrieved_docs = []
-    for idx in indices[0]:
-        if idx < len(df):
+    # definir threshold para considerar um documento relevante
+    similarity_threshold = 0.8
+    for idx, distance in zip(indices[0], distances[0]):
+        if distance <= similarity_threshold:
             # formata o documento utilizando a função preprocess_row
             doc_text = preprocess_row(df.iloc[idx])
             retrieved_docs.append(doc_text)
+    
     return retrieved_docs
 
 
@@ -115,13 +137,15 @@ def query_index(query, top_k, index_path="faiss_index.bin", mapping_path="docume
     index, df = load_saved_data(index_path, mapping_path)
 
     # carregando o modelo de embeddings
-    model_url = "https://tfhub.dev/google/universal-sentence-encoder/4"
-    print("Carregando o modelo de embeddings...")
-    embed = hub.load(model_url)
+    #model_url = "https://tfhub.dev/google/universal-sentence-encoder/4"
+    
+    print("Carregando o modelo Sentence Transformers...")
+    model = SentenceTransformer('all-MiniLM-L6-v2')
+    #embed = hub.load(model_url)
     print("Modelo de embeddings carregado com sucesso!")
 
     #recuperando os documentos mais relevantes
-    retrieved_docs = retrieve_documents(query, index, df, embed, top_k=top_k)
+    retrieved_docs = retrieve_documents(query, index, df, model, top_k=top_k)
     print(f"{len(retrieved_docs)} documentos recuperados:")
     for i, doc in enumerate(retrieved_docs, start=1):
         print(f"\nDocumento {i}:\n{'-'*50}\n{doc}")  
